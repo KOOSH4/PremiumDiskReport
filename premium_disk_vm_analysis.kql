@@ -1,0 +1,42 @@
+// This query retrieves information about disks of type 'Microsoft.Compute/disks' 
+// that use the Premium storage SKU, and correlates them with virtual machines (VMs) 
+// they are attached to, if any. The output includes various details about the disks 
+// and their association with VMs, as well as their availability configurations.
+
+Resources
+| where type =~ 'Microsoft.Compute/disks' // Filter to include only resources of type 'Microsoft.Compute/disks'
+| where sku.name startswith 'Premium_' // Further filter to include only disks with a SKU name that starts with 'Premium_'
+| extend diskState = tostring(properties.diskState) // Create a new column 'diskState' to store the disk state as a string
+| extend diskSizeGB = tostring(properties.diskSizeGB) // Create a new column 'diskSizeGB' to store the disk size in GB as a string
+| extend vmId = tostring(properties.managedBy) // Create a new column 'vmId' to store the ID of the VM the disk is managed by, as a string
+
+// Join with virtual machine data to get additional VM information
+| join kind=leftouter ( 
+    Resources
+    | where type =~ 'Microsoft.Compute/virtualMachines' // Filter to include only resources of type 'Microsoft.Compute/virtualMachines'
+    | extend availabilitySet = tostring(properties.availabilitySet.id) // Create a new column 'availabilitySet' to store the availability set ID as a string
+    | extend availabilityZone = tostring(properties.zones[0]) // Create a new column 'availabilityZone' to store the first availability zone as a string
+    | project vmId = id, availabilitySet, availabilityZone // Project (select) only the necessary columns for the join: VM ID, availability set, and availability zone
+) on vmId // Perform a left outer join on the 'vmId' column
+
+// Extend the results with additional computed columns
+| extend isAttachedToVM = iif(isnotempty(vmId), 'Yes', 'No') // Create a new column 'isAttachedToVM' to indicate if the disk is attached to a VM ('Yes' or 'No')
+| extend vmAvailabilityConfiguration = case(
+    isnotempty(availabilitySet), 'Availability Set', // If the VM is part of an availability set, set 'vmAvailabilityConfiguration' to 'Availability Set'
+    isnotempty(availabilityZone), 'Availability Zone', // If the VM is in an availability zone, set 'vmAvailabilityConfiguration' to 'Availability Zone'
+    isnotempty(vmId), 'None', // If the disk is attached to a VM but without specific availability configuration, set to 'None'
+    'Not attached to VM' // If the disk is not attached to any VM, set to 'Not attached to VM'
+)
+
+// Select the final set of columns to include in the output
+| project 
+    subscriptionId, // Include the subscription ID
+    resourceGroup, // Include the resource group name
+    name, // Include the disk name
+    diskState, // Include the disk state
+    diskSizeGB, // Include the disk size in GB
+    isAttachedToVM, // Include whether the disk is attached to a VM
+    vmAvailabilityConfiguration // Include the VM availability configuration
+
+// Order the results by subscription ID, resource group, and disk name
+| order by subscriptionId, resourceGroup, name
